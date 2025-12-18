@@ -1,0 +1,10 @@
+services:
+  kiro:
+    image: ghcr.io/mamocode/kiro:latest
+    container_name: kiro
+    restart: always
+    ports:
+      - "1188:1188"
+    environment:
+      # 服务配置
+      - PORT=1188

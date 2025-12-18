@@ -1,0 +1,171 @@
+name: Publish Release
+
+on:
+  push:
+    branches:
+      - 'main'
+    paths:
+      - '.version' # 仅当 .version 文件变化时触发
+  workflow_dispatch: # 允许手动触发
+
+jobs:  
+  update-release-draft:  
+    permissions:  
+      contents: write  
+      pull-requests: write  
+    runs-on: ubuntu-latest  
+    steps:  
+      # Step 1: 检出代码库
+      - name: Checkout code
+        uses: actions/checkout@v4
+
+      # Step 2: 获取项目名称和版本号
+      - name: Get Project Info
+        id: project_info
+        run: |
+          # 解析 .version 文件
+          PROJECT_NAME=$(grep '^project_name=' .version | cut -d'=' -f2)
+          VERSION=$(grep '^version=' .version | cut -d'=' -f2)
+          TAG_NAME="v${VERSION}"
+
+          echo "project_name=$PROJECT_NAME" >> $GITHUB_OUTPUT
+          echo "version=$VERSION" >> $GITHUB_OUTPUT
+          echo "tag_name=$TAG_NAME" >> $GITHUB_OUTPUT
+          echo "Using project name: $PROJECT_NAME"
+          echo "Using version: $VERSION"
+          echo "Using tag name: $TAG_NAME"
+
+      # Step 3: 自动生成 Release
+      - name: Create Release
+        id: create_release
+        uses: softprops/action-gh-release@v1
+        with:
+          tag_name: ${{ steps.project_info.outputs.tag_name }}
+          name: ${{ steps.project_info.outputs.tag_name }}
+          draft: false
+          prerelease: false
+          generate_release_notes: true
+      
+      # Step 4: 设置 Go 环境
+      - name: Set up Go
+        uses: actions/setup-go@v5
+        with:
+          go-version: '1.21'
+          cache: false
+
+      # Step 5: 清理和准备构建环境
+      - name: Clean build environment
+        run: |
+          # 清理可能存在的构建缓存
+          go clean -cache -modcache -i -r
+
+      # Step 6: 构建多平台二进制文件
+      - name: Build binaries for multiple platforms
+        run: |
+          PROJECT_NAME=${{ steps.project_info.outputs.project_name }}
+          VERSION=${{ steps.project_info.outputs.version }}
+
+          echo "📋 Starting build process..."
+          echo "  Project Name: $PROJECT_NAME"
+          echo "  Version: $VERSION"
+
+          # 创建构建目录
+          rm -rf build
+          mkdir -p build
+
+          # Windows x86 (32-bit)
+          GOOS=windows GOARCH=386 go build -ldflags "-s -w" -o build/${PROJECT_NAME}-${VERSION}-windows-x86.exe ./cmd/server
+
+          # Windows x64 (64-bit)
+          GOOS=windows GOARCH=amd64 go build -ldflags "-s -w" -o build/${PROJECT_NAME}-${VERSION}-windows-x64.exe ./cmd/server
+
+          # macOS AMD64
+          GOOS=darwin GOARCH=amd64 go build -ldflags "-s -w" -o build/${PROJECT_NAME}-${VERSION}-macos-amd64 ./cmd/server
+
+          # macOS ARM64
+          GOOS=darwin GOARCH=arm64 go build -ldflags "-s -w" -o build/${PROJECT_NAME}-${VERSION}-macos-arm64 ./cmd/server
+
+          # Linux AMD64
+          GOOS=linux GOARCH=amd64 go build -ldflags "-s -w" -o build/${PROJECT_NAME}-${VERSION}-linux-amd64 ./cmd/server
+
+          # Linux ARM64
+          GOOS=linux GOARCH=arm64 go build -ldflags "-s -w" -o build/${PROJECT_NAME}-${VERSION}-linux-arm64 ./cmd/server
+
+          echo "📋 Build completed. Files created:"
+          ls -la build/
+          echo "Total files: $(ls build/ | wc -l)"
+
+      # Step 7: 上传多平台构建文件到 Release
+      - name: Upload Release Assets
+        uses: softprops/action-gh-release@v1
+        with:
+          tag_name: ${{ steps.project_info.outputs.tag_name }}
+          files: |
+            ./build/${{ steps.project_info.outputs.project_name }}-${{ steps.project_info.outputs.version }}-windows-x86.exe
+            ./build/${{ steps.project_info.outputs.project_name }}-${{ steps.project_info.outputs.version }}-windows-x64.exe
+            ./build/${{ steps.project_info.outputs.project_name }}-${{ steps.project_info.outputs.version }}-macos-amd64
+            ./build/${{ steps.project_info.outputs.project_name }}-${{ steps.project_info.outputs.version }}-macos-arm64
+            ./build/${{ steps.project_info.outputs.project_name }}-${{ steps.project_info.outputs.version }}-linux-amd64
+            ./build/${{ steps.project_info.outputs.project_name }}-${{ steps.project_info.outputs.version }}-linux-arm64
+
+      # Step 8: 输出发布摘要信息
+      - name: Release Summary
+        if: success()
+        run: |
+          echo "## 🚀 Release Summary" >> $GITHUB_STEP_SUMMARY
+          echo "| Item | Value |" >> $GITHUB_STEP_SUMMARY
+          echo "|------|-------|" >> $GITHUB_STEP_SUMMARY
+          echo "| **Event Type** | \`${{ github.event_name }}\` |" >> $GITHUB_STEP_SUMMARY
+          echo "| **Branch/Tag** | \`${{ github.ref_name }}\` |" >> $GITHUB_STEP_SUMMARY
+          echo "| **Commit SHA** | \`${{ github.sha }}\` |" >> $GITHUB_STEP_SUMMARY
+          echo "| **Build Time** | \`$(date -u)\` |" >> $GITHUB_STEP_SUMMARY
+          echo "| **Package Name** | \`${{ steps.project_info.outputs.project_name }}\` |" >> $GITHUB_STEP_SUMMARY
+          echo "| **Package Version** | \`${{ steps.project_info.outputs.version }}\` |" >> $GITHUB_STEP_SUMMARY
+          echo "| **Release Tag** | \`${{ steps.project_info.outputs.tag_name }}\` |" >> $GITHUB_STEP_SUMMARY
+          echo "| **Action** | ✅ **Built and Released** |" >> $GITHUB_STEP_SUMMARY
+          echo "| **Platforms** | Windows (x86/x64), macOS (Intel/ARM), Linux (AMD64/ARM64) |" >> $GITHUB_STEP_SUMMARY
+          echo "| **Repository** | \`${{ github.repository }}\` |" >> $GITHUB_STEP_SUMMARY
+          echo "" >> $GITHUB_STEP_SUMMARY
+          echo "### 📦 Available Downloads:" >> $GITHUB_STEP_SUMMARY
+          echo '```' >> $GITHUB_STEP_SUMMARY
+          echo "${{ steps.project_info.outputs.project_name }}-${{ steps.project_info.outputs.version }}-windows-x86.exe" >> $GITHUB_STEP_SUMMARY
+          echo "${{ steps.project_info.outputs.project_name }}-${{ steps.project_info.outputs.version }}-windows-x64.exe" >> $GITHUB_STEP_SUMMARY
+          echo "${{ steps.project_info.outputs.project_name }}-${{ steps.project_info.outputs.version }}-macos-amd64" >> $GITHUB_STEP_SUMMARY
+          echo "${{ steps.project_info.outputs.project_name }}-${{ steps.project_info.outputs.version }}-macos-arm64" >> $GITHUB_STEP_SUMMARY
+          echo "${{ steps.project_info.outputs.project_name }}-${{ steps.project_info.outputs.version }}-linux-amd64" >> $GITHUB_STEP_SUMMARY
+          echo "${{ steps.project_info.outputs.project_name }}-${{ steps.project_info.outputs.version }}-linux-arm64" >> $GITHUB_STEP_SUMMARY
+          echo '```' >> $GITHUB_STEP_SUMMARY
+          echo "" >> $GITHUB_STEP_SUMMARY
+          echo "### 🎯 Usage Examples:" >> $GITHUB_STEP_SUMMARY
+          echo '```bash' >> $GITHUB_STEP_SUMMARY
+          echo "# Download and run Windows version (64-bit)" >> $GITHUB_STEP_SUMMARY
+          echo "curl -L -o ${{ steps.project_info.outputs.project_name }}.exe https://github.com/${{ github.repository }}/releases/download/${{ steps.project_info.outputs.tag_name }}/${{ steps.project_info.outputs.project_name }}-${{ steps.project_info.outputs.version }}-windows-x64.exe" >> $GITHUB_STEP_SUMMARY
+          echo "./${{ steps.project_info.outputs.project_name }}.exe" >> $GITHUB_STEP_SUMMARY
+          echo "" >> $GITHUB_STEP_SUMMARY
+          echo "# Download and run macOS version (ARM64)" >> $GITHUB_STEP_SUMMARY
+          echo "curl -L -o ${{ steps.project_info.outputs.project_name }} https://github.com/${{ github.repository }}/releases/download/${{ steps.project_info.outputs.tag_name }}/${{ steps.project_info.outputs.project_name }}-${{ steps.project_info.outputs.version }}-macos-arm64" >> $GITHUB_STEP_SUMMARY
+          echo "chmod +x ${{ steps.project_info.outputs.project_name }}" >> $GITHUB_STEP_SUMMARY
+          echo "./${{ steps.project_info.outputs.project_name }}" >> $GITHUB_STEP_SUMMARY
+          echo "" >> $GITHUB_STEP_SUMMARY
+          echo "# Download and run Linux version (AMD64)" >> $GITHUB_STEP_SUMMARY
+          echo "curl -L -o ${{ steps.project_info.outputs.project_name }} https://github.com/${{ github.repository }}/releases/download/${{ steps.project_info.outputs.tag_name }}/${{ steps.project_info.outputs.project_name }}-${{ steps.project_info.outputs.version }}-linux-amd64" >> $GITHUB_STEP_SUMMARY
+          echo "chmod +x ${{ steps.project_info.outputs.project_name }}" >> $GITHUB_STEP_SUMMARY
+          echo "./${{ steps.project_info.outputs.project_name }}" >> $GITHUB_STEP_SUMMARY
+          echo '```' >> $GITHUB_STEP_SUMMARY
+
+      - name: Release success notification
+        if: success()
+        run: |
+          echo "✅ Multi-platform binary release completed successfully!"
+          echo "📊 Release Tag: ${{ steps.project_info.outputs.tag_name }}"
+          echo "🏗️ Platforms: Windows (x86/x64), macOS (Intel/ARM), Linux (AMD64/ARM64)"
+          echo "📦 Package: ${{ steps.project_info.outputs.project_name }}"
+          echo "🔖 Version: ${{ steps.project_info.outputs.version }}"
+          echo "📤 Released to GitHub: ${{ github.repository }}"
+          echo "🏷️ Assets uploaded:"
+          echo "  - Windows x86: ${{ steps.project_info.outputs.project_name }}-${{ steps.project_info.outputs.version }}-windows-x86.exe"
+          echo "  - Windows x64: ${{ steps.project_info.outputs.project_name }}-${{ steps.project_info.outputs.version }}-windows-x64.exe"
+          echo "  - macOS Intel: ${{ steps.project_info.outputs.project_name }}-${{ steps.project_info.outputs.version }}-macos-amd64"
+          echo "  - macOS ARM: ${{ steps.project_info.outputs.project_name }}-${{ steps.project_info.outputs.version }}-macos-arm64"
+          echo "  - Linux AMD64: ${{ steps.project_info.outputs.project_name }}-${{ steps.project_info.outputs.version }}-linux-amd64"
+          echo "  - Linux ARM64: ${{ steps.project_info.outputs.project_name }}-${{ steps.project_info.outputs.version }}-linux-arm64"

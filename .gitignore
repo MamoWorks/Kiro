@@ -1,0 +1,42 @@
+.claude/settings.local.json
+kiro2api
+main
+.env
+
+# Docker 相关文件
+.env.local
+.env.*.local
+
+# 日志文件
+logs/
+*.log
+debug*.log
+
+# 临时文件
+tmp/
+temp/
+*.tmp
+
+# 运行时文件
+.kiro_config
+*.pid
+kiro2api.log
+
+# 测试数据
+test/raw_data_replay/
+
+# IDE 和系统文件
+.DS_Store
+.serena
+
+# 旧文件清理标记
+1.json
+2.json
+a1.json
+server.py
+jetbrainsai2api
+parser.test
+auth.json
+*.json
+.go*
+*.out
