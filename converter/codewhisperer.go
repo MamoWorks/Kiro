@@ -100,12 +100,25 @@ func buildEnhancedSystemPrompt(anthropicReq types.AnthropicRequest) string {
 		systemPrompt.WriteString(agenticSystemPrompt)
 	}
 
-	// 4. 注入 Thinking 模式提示（条件：thinking.type == "enabled"）
+	// 4. 注入 Thinking 模式提示
+	// SillyTavern 分支：检测模型名是否包含 -thinking 后缀，或显式启用
+	shouldEnableThinking := false
+	budgetTokens := 16000 // 默认值
+
+	// 检查模型名是否包含 -thinking 后缀
+	if strings.Contains(anthropicReq.Model, "-thinking") {
+		shouldEnableThinking = true
+	}
+
+	// 检查是否显式启用了 Thinking 模式
 	if anthropicReq.Thinking != nil && anthropicReq.Thinking.Type == "enabled" {
-		budgetTokens := anthropicReq.Thinking.BudgetTokens
-		if budgetTokens <= 0 {
-			budgetTokens = 16000 // 默认值
+		shouldEnableThinking = true
+		if anthropicReq.Thinking.BudgetTokens > 0 {
+			budgetTokens = anthropicReq.Thinking.BudgetTokens
 		}
+	}
+
+	if shouldEnableThinking {
 		systemPrompt.WriteString("\n")
 		systemPrompt.WriteString(fmt.Sprintf("<thinking_mode>interleaved</thinking_mode><max_thinking_length>%d</max_thinking_length>", budgetTokens))
 	}
