@@ -313,7 +313,29 @@ func convertMessageStart(m map[string]any) *types.MessageStartEvent {
 		msg.Role, _ = message["role"].(string)
 		msg.Model, _ = message["model"].(string)
 		if content, ok := message["content"].([]any); ok && content != nil {
-			msg.Content = content
+			// 过滤 content 数组，移除 thinking 块中的 signature 字段
+			cleanedContent := make([]any, 0, len(content))
+			for _, item := range content {
+				if contentBlock, ok := item.(map[string]any); ok {
+					// 如果是 thinking 类型，移除 signature 字段
+					if blockType, _ := contentBlock["type"].(string); blockType == "thinking" {
+						cleanedBlock := make(map[string]any)
+						for k, v := range contentBlock {
+							if k != "signature" {
+								cleanedBlock[k] = v
+							}
+						}
+						cleanedContent = append(cleanedContent, cleanedBlock)
+					} else {
+						// 其他类型直接保留
+						cleanedContent = append(cleanedContent, item)
+					}
+				} else {
+					// 非 map 类型直接保留
+					cleanedContent = append(cleanedContent, item)
+				}
+			}
+			msg.Content = cleanedContent
 		}
 		if usage, ok := message["usage"].(map[string]any); ok {
 			msg.Usage = &types.UsageInfo{}
@@ -343,6 +365,7 @@ func convertMessageStart(m map[string]any) *types.MessageStartEvent {
 	}
 	return types.NewMessageStartEvent(msg)
 }
+
 
 func convertContentBlockStart(m map[string]any) *types.ContentBlockStartEvent {
 	index := 0
