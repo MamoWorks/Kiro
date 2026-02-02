@@ -8,6 +8,7 @@ import (
 	"strings"
 	"time"
 
+	"kiro/cache"
 	"kiro/config"
 
 	"kiro/parser"
@@ -55,7 +56,7 @@ func handleStreamRequest(c *gin.Context, anthropicReq types.AnthropicRequest, to
 }
 
 // handleGenericStreamRequest 通用流式请求处理
-func handleGenericStreamRequest(c *gin.Context, anthropicReq types.AnthropicRequest, token types.TokenInfo, sender StreamEventSender, eventCreator func(string, int, string) []map[string]any) {
+func handleGenericStreamRequest(c *gin.Context, anthropicReq types.AnthropicRequest, token types.TokenInfo, sender StreamEventSender, eventCreator func(string, int, string, *cache.CacheResult) []map[string]any) {
 	// 计算输入tokens（基于实际发送给上游的数据）
 	estimator := utils.NewTokenEstimator()
 	countReq := &types.CountTokensRequest{
@@ -65,6 +66,9 @@ func handleGenericStreamRequest(c *gin.Context, anthropicReq types.AnthropicRequ
 		Tools:    filterSupportedTools(anthropicReq.Tools), // 过滤不支持的工具后计算
 	}
 	inputTokens := estimator.EstimateTokens(countReq)
+
+	// 执行缓存处理
+	cacheResult := cache.ProcessRequest(anthropicReq, inputTokens)
 
 	// 生成消息ID并注入上下文
 	messageID := fmt.Sprintf(config.MessageIDFormat, time.Now().Format(config.MessageIDTimeFormat))
@@ -96,7 +100,7 @@ func handleGenericStreamRequest(c *gin.Context, anthropicReq types.AnthropicRequ
 	}
 
 	// 创建流处理上下文
-	ctx := NewStreamProcessorContext(c, anthropicReq, token, sender, messageID, inputTokens)
+	ctx := NewStreamProcessorContext(c, anthropicReq, token, sender, messageID, inputTokens, cacheResult)
 	defer ctx.Cleanup()
 
 	// 发送初始事件
@@ -116,10 +120,27 @@ func handleGenericStreamRequest(c *gin.Context, anthropicReq types.AnthropicRequ
 		utils.Log("发送结束事件失败", utils.LogErr(err))
 		return
 	}
+
+	// 日志输出缓存统计
+	logCacheResult(cacheResult, inputTokens, ctx.totalOutputTokens, true)
 }
 
 // createAnthropicStreamEvents 创建Anthropic流式初始事件
-func createAnthropicStreamEvents(messageId string, inputTokens int, model string) []map[string]any {
+func createAnthropicStreamEvents(messageId string, inputTokens int, model string, cacheResult *cache.CacheResult) []map[string]any {
+	// 构建 usage 对象
+	usage := map[string]any{
+		"input_tokens":  inputTokens,
+		"output_tokens": 0,
+	}
+	if cacheResult != nil {
+		if cacheResult.CacheCreationTokens > 0 {
+			usage["cache_creation_input_tokens"] = cacheResult.CacheCreationTokens
+		}
+		if cacheResult.CacheReadTokens > 0 {
+			usage["cache_read_input_tokens"] = cacheResult.CacheReadTokens
+		}
+	}
+
 	// 创建基础初始事件序列
 	// 注意：ping 事件在 sse_state_manager 中第一个 content_block_start 之后发送
 	// 这与官方 Claude API 顺序一致：message_start -> content_block_start -> ping
@@ -134,10 +155,7 @@ func createAnthropicStreamEvents(messageId string, inputTokens int, model string
 				"model":         model,
 				"stop_reason":   nil,
 				"stop_sequence": nil,
-				"usage": map[string]any{
-					"input_tokens":  inputTokens,
-					"output_tokens": 0,
-				},
+				"usage":         usage,
 			},
 		},
 	}
@@ -185,6 +203,9 @@ func handleNonStreamRequest(c *gin.Context, anthropicReq types.AnthropicRequest,
 		Tools:    filterSupportedTools(anthropicReq.Tools), // 过滤不支持的工具后计算
 	}
 	inputTokens := estimator.EstimateTokens(countReq)
+
+	// 执行缓存处理
+	cacheResult := cache.ProcessRequest(anthropicReq, inputTokens)
 
 	resp, err := executeCodeWhispererRequest(c, anthropicReq, token, false)
 	if err != nil {
@@ -409,6 +430,20 @@ func handleNonStreamRequest(c *gin.Context, anthropicReq types.AnthropicRequest,
 	// 	utils.LogBool("saw_tool_use", sawToolUse),
 	// 	utils.LogInt("output_tokens", outputTokens))
 
+	// 构建 usage 对象
+	usageMap := map[string]any{
+		"input_tokens":  inputTokens,
+		"output_tokens": outputTokens,
+	}
+	if cacheResult != nil {
+		if cacheResult.CacheCreationTokens > 0 {
+			usageMap["cache_creation_input_tokens"] = cacheResult.CacheCreationTokens
+		}
+		if cacheResult.CacheReadTokens > 0 {
+			usageMap["cache_read_input_tokens"] = cacheResult.CacheReadTokens
+		}
+	}
+
 	anthropicResp := map[string]any{
 		"content":       contexts,
 		"model":         anthropicReq.Model,
@@ -416,10 +451,7 @@ func handleNonStreamRequest(c *gin.Context, anthropicReq types.AnthropicRequest,
 		"stop_reason":   stopReason,
 		"stop_sequence": nil,
 		"type":          "message",
-		"usage": map[string]any{
-			"input_tokens":  inputTokens,
-			"output_tokens": outputTokens,
-		},
+		"usage":         usageMap,
 	}
 
 	// utils.Log("非流式响应最终数据",
@@ -434,6 +466,9 @@ func handleNonStreamRequest(c *gin.Context, anthropicReq types.AnthropicRequest,
 			utils.LogInt("content_count", len(contexts)),
 		)...)
 	c.JSON(http.StatusOK, anthropicResp)
+
+	// 日志输出缓存统计
+	logCacheResult(cacheResult, inputTokens, outputTokens, false)
 }
 
 // createTokenPreview 创建token预览显示格式 (***+后10位)
@@ -507,4 +542,22 @@ func maskEmail(email string) string {
 	}
 
 	return maskedUsername + "@" + maskedDomain
+}
+
+// logCacheResult 输出缓存统计日志
+func logCacheResult(cacheResult *cache.CacheResult, inputTokens, outputTokens int, isStream bool) {
+	mode := "非流式"
+	if isStream {
+		mode = "流式"
+	}
+
+	cacheCreation := 0
+	cacheRead := 0
+	if cacheResult != nil {
+		cacheCreation = cacheResult.CacheCreationTokens
+		cacheRead = cacheResult.CacheReadTokens
+	}
+
+	utils.Info("请求完成 [%s] | input: %d, output: %d, cache_creation: %d, cache_read: %d",
+		mode, inputTokens, outputTokens, cacheCreation, cacheRead)
 }

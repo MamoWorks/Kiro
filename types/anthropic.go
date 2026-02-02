@@ -58,10 +58,17 @@ type AnthropicRequestMessage struct {
 	Content any    `json:"content"` // 可以是 string 或 []ContentBlock
 }
 
+// CacheControl 表示缓存控制配置
+type CacheControl struct {
+	Type string `json:"type"`          // "ephemeral"
+	TTL  string `json:"ttl,omitempty"` // "5m" (默认) 或 "1h"
+}
+
 // AnthropicSystemMessage 表示系统消息结构
 type AnthropicSystemMessage struct {
-	Type string `json:"type"`
-	Text string `json:"text"`
+	Type         string        `json:"type"`
+	Text         string        `json:"text"`
+	CacheControl *CacheControl `json:"cache_control,omitempty"`
 }
 
 // SystemMessages 封装系统消息，支持字符串和数组两种格式
@@ -92,15 +99,16 @@ func (s *SystemMessages) UnmarshalJSON(data []byte) error {
 
 // ContentBlock 表示消息内容块的结构
 type ContentBlock struct {
-	Type      string       `json:"type"`
-	Text      *string      `json:"text,omitempty"`
-	ToolUseId *string      `json:"tool_use_id,omitempty"`
-	Content   any          `json:"content,omitempty"`  // tool_result的内容，可以是string、[]any或map[string]any
-	Name      *string      `json:"name,omitempty"`     // tool_use的名称
-	Input     *any         `json:"input,omitempty"`    // tool_use的输入参数
-	ID        *string      `json:"id,omitempty"`       // tool_use的唯一标识符
-	IsError   *bool        `json:"is_error,omitempty"` // tool_result是否表示错误
-	Source    *ImageSource `json:"source,omitempty"`   // 图片数据源
+	Type         string        `json:"type"`
+	Text         *string       `json:"text,omitempty"`
+	ToolUseId    *string       `json:"tool_use_id,omitempty"`
+	Content      any           `json:"content,omitempty"`  // tool_result的内容，可以是string、[]any或map[string]any
+	Name         *string       `json:"name,omitempty"`     // tool_use的名称
+	Input        *any          `json:"input,omitempty"`    // tool_use的输入参数
+	ID           *string       `json:"id,omitempty"`       // tool_use的唯一标识符
+	IsError      *bool         `json:"is_error,omitempty"` // tool_result是否表示错误
+	Source       *ImageSource  `json:"source,omitempty"`   // 图片数据源
+	CacheControl *CacheControl `json:"cache_control,omitempty"`
 }
 
 // ImageSource 表示图片数据源的结构

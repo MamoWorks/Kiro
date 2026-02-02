@@ -5,6 +5,7 @@ import (
 	"io"
 	"strings"
 
+	"kiro/cache"
 	"kiro/parser"
 	"kiro/types"
 	"kiro/utils"
@@ -21,6 +22,7 @@ type StreamProcessorContext struct {
 	sender      StreamEventSender
 	messageID   string
 	inputTokens int
+	cacheResult *cache.CacheResult
 
 	// 状态管理器
 	sseStateManager   *SSEStateManager
@@ -60,6 +62,7 @@ func NewStreamProcessorContext(
 	sender StreamEventSender,
 	messageID string,
 	inputTokens int,
+	cacheResult *cache.CacheResult,
 ) *StreamProcessorContext {
 	// 检查是否启用了 thinking 模式
 	thinkingEnabled := req.Thinking != nil && req.Thinking.Type == "enabled"
@@ -71,6 +74,7 @@ func NewStreamProcessorContext(
 		sender:                sender,
 		messageID:             messageID,
 		inputTokens:           inputTokens,
+		cacheResult:           cacheResult,
 		sseStateManager:       NewSSEStateManager(false),
 		stopReasonManager:     NewStopReasonManager(req),
 		tokenEstimator:        utils.NewTokenEstimator(),
@@ -142,9 +146,9 @@ func initializeSSEResponse(c *gin.Context) error {
 }
 
 // sendInitialEvents 发送初始事件
-func (ctx *StreamProcessorContext) sendInitialEvents(eventCreator func(string, int, string) []map[string]any) error {
+func (ctx *StreamProcessorContext) sendInitialEvents(eventCreator func(string, int, string, *cache.CacheResult) []map[string]any) error {
 	// 直接使用上下文中的 inputTokens（已经通过 TokenEstimator 精确计算）
-	initialEvents := eventCreator(ctx.messageID, ctx.inputTokens, ctx.req.Model)
+	initialEvents := eventCreator(ctx.messageID, ctx.inputTokens, ctx.req.Model, ctx.cacheResult)
 
 	// 注意：初始事件现在只包含 message_start 和 ping
 	// content_block_start 会在收到实际内容时由 sse_state_manager 自动生成
