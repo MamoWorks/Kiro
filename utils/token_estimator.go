@@ -33,7 +33,8 @@ func getClaudeTokenizer() (*tokenizer.Tokenizer, error) {
 		}
 
 		// 创建临时文件（pretrained.FromFile 需要文件路径）
-		tmpFile, err := os.CreateTemp("", "claude_tokenizer_*.json")
+		// 使用当前目录，避免 /tmp 在某些容器中不存在的问题
+		tmpFile, err := os.CreateTemp(".", ".claude_tokenizer_*.json")
 		if err != nil {
 			initErr = fmt.Errorf("failed to create temp file: %w", err)
 			return
