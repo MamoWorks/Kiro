@@ -49,11 +49,9 @@ jobs:
     permissions:
       contents: write
     strategy:
+      fail-fast: false
       matrix:
         include:
-          - goos: windows
-            goarch: 386
-            suffix: windows-x86.exe
           - goos: windows
             goarch: amd64
             suffix: windows-x64.exe
@@ -114,11 +112,10 @@ jobs:
           echo "| **Package Version** | \`${VERSION}\` |" >> $GITHUB_STEP_SUMMARY
           echo "| **Release Tag** | \`${TAG_NAME}\` |" >> $GITHUB_STEP_SUMMARY
           echo "| **Action** | ✅ **Built and Released** |" >> $GITHUB_STEP_SUMMARY
-          echo "| **Platforms** | Windows (x86/x64), macOS (Intel/ARM), Linux (AMD64/ARM64) |" >> $GITHUB_STEP_SUMMARY
+          echo "| **Platforms** | Windows (x64), macOS (Intel/ARM), Linux (AMD64/ARM64) |" >> $GITHUB_STEP_SUMMARY
           echo "" >> $GITHUB_STEP_SUMMARY
           echo "### 📦 Available Downloads:" >> $GITHUB_STEP_SUMMARY
           echo '```' >> $GITHUB_STEP_SUMMARY
-          echo "${PROJECT_NAME}-${VERSION}-windows-x86.exe" >> $GITHUB_STEP_SUMMARY
           echo "${PROJECT_NAME}-${VERSION}-windows-x64.exe" >> $GITHUB_STEP_SUMMARY
           echo "${PROJECT_NAME}-${VERSION}-macos-amd64" >> $GITHUB_STEP_SUMMARY
           echo "${PROJECT_NAME}-${VERSION}-macos-arm64" >> $GITHUB_STEP_SUMMARY
@@ -142,4 +139,4 @@ jobs:
         run: |
           echo "✅ Multi-platform binary release completed successfully!"
           echo "📊 Release Tag: ${{ needs.create-release.outputs.tag_name }}"
-          echo "🏗️ Platforms: Windows (x86/x64), macOS (Intel/ARM), Linux (AMD64/ARM64)"
+          echo "🏗️ Platforms: Windows (x64), macOS (Intel/ARM), Linux (AMD64/ARM64)"
