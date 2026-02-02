@@ -23,17 +23,6 @@ const (
 	RetryDelay = 100 * time.Millisecond
 )
 
-// Token估算常量
-const (
-	// BaseToolsOverhead 基础工具开销（tokens）
-	BaseToolsOverhead = 100
-
-	// ShortTextThreshold 短文本阈值（字符数）
-	ShortTextThreshold = 100
-
-	// LongTextThreshold 长文本阈值（字符数）
-	LongTextThreshold = 1000
-)
 
 // EventStream解析器常量
 const (
@@ -42,11 +31,4 @@ const (
 
 	// EventStreamMaxMessageSize AWS EventStream最大消息长度（16MB）
 	EventStreamMaxMessageSize = 16 * 1024 * 1024
-)
-
-// Token计算常量
-const (
-	// TokenEstimationRatio 字符到token的估算比例
-	// 用于工具调用参数的JSON内容token估算
-	TokenEstimationRatio = 4
 )
