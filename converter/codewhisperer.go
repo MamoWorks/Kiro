@@ -389,11 +389,10 @@ func BuildCodeWhispererRequest(anthropicReq types.AnthropicRequest, ctx *gin.Con
 		}
 	}
 
-	// 检查模型映射是否存在，如果不存在则返回错误
+	// 获取模型映射，如果不存在则直接透传原始模型ID
 	modelId := config.ModelMap[anthropicReq.Model]
 	if modelId == "" {
-		// 返回模型未找到错误
-		return cwReq, types.NewModelNotFoundErrorType(anthropicReq.Model, cwReq.ConversationState.ConversationId)
+		modelId = anthropicReq.Model
 	}
 	cwReq.ConversationState.CurrentMessage.UserInputMessage.ModelId = modelId
 	cwReq.ConversationState.CurrentMessage.UserInputMessage.Origin = "AI_EDITOR" // v0.4兼容性：固定使用AI_EDITOR
