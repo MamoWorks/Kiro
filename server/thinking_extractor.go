@@ -170,24 +170,11 @@ func (te *ThinkingExtractor) IsInThinkingBlock() bool {
 	return te.inThinkingBlock
 }
 
-// generateSignature 生成伪造的 thinking 签名
-// 格式类似 Anthropic 的签名：加密的思考内容，base64 编码
-// 实际签名长度与思考内容相关，这里生成约 200-500 字节的随机数据
+// generateSignature 生成 thinking 签名并注册到签名表
 func (te *ThinkingExtractor) generateSignature() string {
-	// 根据累积的思考内容长度生成相应长度的签名
-	// 模拟加密数据：大约是原始内容的 1.5 倍长度，最小 200 字节
-	contentLen := te.thinkingContent.Len()
-	signatureLen := contentLen * 3 / 2
-	if signatureLen < 200 {
-		signatureLen = 200
-	}
-	if signatureLen > 1000 {
-		signatureLen = 1000
-	}
-
-	randomBytes := make([]byte, signatureLen)
-	rand.Read(randomBytes)
-	return base64.StdEncoding.EncodeToString(randomBytes)
+	sig := generateProtobufLikeSignature(te.thinkingContent.Len())
+	RegisterSignature(sig)
+	return sig
 }
 
 // ProcessText 处理文本增量（兼容旧接口）
@@ -251,19 +238,54 @@ func ExtractThinkingFromFinalText(text string) (thinkingBlocks []string, cleanTe
 	return thinkingBlocks, cleanText
 }
 
-// GenerateFakeSignature 生成伪造签名（公开方法）
-// contentLen 是思考内容的长度，用于生成相应长度的签名
+// GenerateFakeSignature 生成签名并注册到签名表（公开方法）
 func GenerateFakeSignature(contentLen int) string {
-	// 模拟加密数据：大约是原始内容的 1.5 倍长度，最小 200 字节
-	signatureLen := contentLen * 3 / 2
-	if signatureLen < 200 {
-		signatureLen = 200
+	sig := generateProtobufLikeSignature(contentLen)
+	RegisterSignature(sig)
+	return sig
+}
+
+// generateProtobufLikeSignature 生成模拟官方 protobuf 格式的签名
+// 官方签名特征：以 "Ev"/"Eu" 开头，含 "CkYI" 子串，Base64 编码，末尾 "=="
+func generateProtobufLikeSignature(contentLen int) string {
+	// 官方签名长度约 400-700 bytes (编码后)，与 thinking 内容长度正相关
+	signatureLen := contentLen * 2 / 3
+	if signatureLen < 300 {
+		signatureLen = 300
 	}
-	if signatureLen > 1000 {
-		signatureLen = 1000
+	if signatureLen > 700 {
+		signatureLen = 700
 	}
 
-	randomBytes := make([]byte, signatureLen)
+	// 构建模拟 protobuf 头：固定前缀模拟真实结构
+	// field 1 (tag 0x12), varint length, "CkYI" (嵌套 message header)
+	prefix := []byte{0x12} // field 2, wire type 2 (length-delimited) → Base64 "Ev" 前缀
+
+	// 随机负载
+	payloadLen := signatureLen - 1
+	randomBytes := make([]byte, payloadLen)
 	rand.Read(randomBytes)
-	return base64.StdEncoding.EncodeToString(randomBytes)
+
+	// 注入 "CkYI" 特征在前 4-8 字节位置
+	// CkYI 的原始字节: 0x0A 0x46 0x08
+	if payloadLen > 8 {
+		randomBytes[0] = 0x83 // 使 base64 输出接近 "g"/"h" 范围
+		randomBytes[1] = 0x0A // "CkYI" proto field
+		randomBytes[2] = 0x46
+		randomBytes[3] = 0x08
+		// 后面跟 varint + 随机数据
+		randomBytes[4] = 0x0B // field number hint
+		randomBytes[5] = 0x18
+		randomBytes[6] = 0x02
+	}
+
+	fullBytes := append(prefix, randomBytes...)
+	encoded := base64.StdEncoding.EncodeToString(fullBytes)
+
+	// 确保末尾有 "=="
+	if !strings.HasSuffix(encoded, "==") {
+		encoded += "=="
+	}
+
+	return encoded
 }

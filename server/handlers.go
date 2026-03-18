@@ -71,7 +71,7 @@ func handleGenericStreamRequest(c *gin.Context, anthropicReq types.AnthropicRequ
 	cacheResult := cache.ProcessRequest(anthropicReq, inputTokens)
 
 	// 生成消息ID并注入上下文
-	messageID := fmt.Sprintf(config.MessageIDFormat, time.Now().Format(config.MessageIDTimeFormat))
+	messageID := fmt.Sprintf(config.MessageIDFormat, utils.GenerateBase62ID(22))
 	c.Set("message_id", messageID)
 
 	// 先执行上游请求，确保成功后再建立 SSE 连接
@@ -127,16 +127,27 @@ func handleGenericStreamRequest(c *gin.Context, anthropicReq types.AnthropicRequ
 
 // createAnthropicStreamEvents 创建Anthropic流式初始事件
 func createAnthropicStreamEvents(messageId string, inputTokens int, model string, cacheResult *cache.CacheResult) []map[string]any {
-	// 计算实际 input_tokens（扣除 cache_read）
+	// 计算实际 input_tokens（扣除 cache_read 和 cache_creation）
 	actualInputTokens := inputTokens
-	if cacheResult != nil && cacheResult.CacheReadTokens > 0 {
-		actualInputTokens = inputTokens - cacheResult.CacheReadTokens
+	if cacheResult != nil {
+		actualInputTokens -= cacheResult.CacheReadTokens + cacheResult.CacheCreationTokens
+	}
+	if actualInputTokens < 0 {
+		actualInputTokens = 0
 	}
 
-	// 构建 usage 对象
+	// 构建 usage 对象（含官方特征字段）
 	usage := map[string]any{
-		"input_tokens":  actualInputTokens,
-		"output_tokens": 0,
+		"input_tokens":                  actualInputTokens,
+		"cache_creation_input_tokens":   0,
+		"cache_read_input_tokens":       0,
+		"output_tokens":                 0,
+		"service_tier":                  "standard",
+		"inference_geo":                 "not_available",
+		"cache_creation": map[string]int{
+			"ephemeral_5m_input_tokens": 0,
+			"ephemeral_1h_input_tokens": 0,
+		},
 	}
 	if cacheResult != nil {
 		if cacheResult.CacheCreationTokens > 0 {
@@ -170,10 +181,13 @@ func createAnthropicStreamEvents(messageId string, inputTokens int, model string
 
 // createAnthropicFinalEvents 创建Anthropic流式结束事件
 func createAnthropicFinalEvents(outputTokens, inputTokens int, stopReason string, cacheResult *cache.CacheResult) []map[string]any {
-	// 计算实际 input_tokens（扣除 cache_read）
+	// 计算实际 input_tokens（扣除 cache_read 和 cache_creation）
 	actualInputTokens := inputTokens
-	if cacheResult != nil && cacheResult.CacheReadTokens > 0 {
-		actualInputTokens = inputTokens - cacheResult.CacheReadTokens
+	if cacheResult != nil {
+		actualInputTokens -= cacheResult.CacheReadTokens + cacheResult.CacheCreationTokens
+	}
+	if actualInputTokens < 0 {
+		actualInputTokens = 0
 	}
 
 	// 删除硬编码的content_block_stop，依赖sendFinalEvents的动态保护机制
@@ -192,8 +206,10 @@ func createAnthropicFinalEvents(outputTokens, inputTokens int, stopReason string
 				"stop_sequence": nil,
 			},
 			"usage": map[string]any{
-				"output_tokens": outputTokens,
 				"input_tokens":  actualInputTokens,
+				"output_tokens": outputTokens,
+				"service_tier":  "standard",
+				"inference_geo": "not_available",
 			},
 		},
 		{
@@ -291,7 +307,7 @@ func handleNonStreamRequest(c *gin.Context, anthropicReq types.AnthropicRequest,
 	}
 
 	// 转换为Anthropic格式
-	var contexts []map[string]any
+	var contexts []any
 	textAgg := result.GetCompletionText()
 
 	// 检查是否启用了 thinking 模式
@@ -331,10 +347,10 @@ func handleNonStreamRequest(c *gin.Context, anthropicReq types.AnthropicRequest,
 			if len(thinkingBlocks) > 0 {
 				mergedThinking := strings.Join(thinkingBlocks, "\n\n")
 				if mergedThinking != "" {
-					contexts = append(contexts, map[string]any{
-						"type":      "thinking",
-						"thinking":  mergedThinking,
-						"signature": GenerateFakeSignature(len(mergedThinking)),
+					contexts = append(contexts, &types.SSEThinkingContentBlock{
+						Type:      "thinking",
+						Thinking:  mergedThinking,
+						Signature: GenerateFakeSignature(len(mergedThinking)),
 					})
 				}
 			}
@@ -410,21 +426,29 @@ func handleNonStreamRequest(c *gin.Context, anthropicReq types.AnthropicRequest,
 	// 3. 一致性：确保 token 计算与实际响应内容完全一致
 	outputTokens := 0
 	for _, contentBlock := range contexts {
-		blockType, _ := contentBlock["type"].(string)
+		// 支持 map[string]any 和 struct 两种类型
+		var blockType, text, toolName string
+		var toolInput map[string]any
+
+		switch cb := contentBlock.(type) {
+		case map[string]any:
+			blockType, _ = cb["type"].(string)
+			text, _ = cb["text"].(string)
+			toolName, _ = cb["name"].(string)
+			toolInput, _ = cb["input"].(map[string]any)
+		case *types.SSEThinkingContentBlock:
+			blockType = "thinking"
+		}
 
 		switch blockType {
 		case "text":
-			// 文本块：基于实际发送的文本内容
-			if text, ok := contentBlock["text"].(string); ok {
+			if text != "" {
 				outputTokens += estimator.EstimateTextTokens(text)
 			}
-
 		case "tool_use":
-			// 工具调用块：基于实际发送的工具名称和参数
-			// 这里使用与 SSE 响应相同的 token 计算逻辑
-			toolName, _ := contentBlock["name"].(string)
-			toolInput, _ := contentBlock["input"].(map[string]any)
 			outputTokens += estimator.EstimateToolUseTokens(toolName, toolInput)
+		case "thinking":
+			// thinking 块不计入 output_tokens
 		}
 	}
 
@@ -443,15 +467,26 @@ func handleNonStreamRequest(c *gin.Context, anthropicReq types.AnthropicRequest,
 	// 	utils.LogInt("output_tokens", outputTokens))
 
 	// 构建 usage 对象
-	// 计算实际 input_tokens（扣除 cache_read）
+	// 计算实际 input_tokens（扣除 cache_read 和 cache_creation）
 	actualInputTokens := inputTokens
-	if cacheResult != nil && cacheResult.CacheReadTokens > 0 {
-		actualInputTokens = inputTokens - cacheResult.CacheReadTokens
+	if cacheResult != nil {
+		actualInputTokens -= cacheResult.CacheReadTokens + cacheResult.CacheCreationTokens
+	}
+	if actualInputTokens < 0 {
+		actualInputTokens = 0
 	}
 
 	usageMap := map[string]any{
-		"input_tokens":  actualInputTokens,
-		"output_tokens": outputTokens,
+		"input_tokens":                  actualInputTokens,
+		"cache_creation_input_tokens":   0,
+		"cache_read_input_tokens":       0,
+		"output_tokens":                 outputTokens,
+		"service_tier":                  "standard",
+		"inference_geo":                 "not_available",
+		"cache_creation": map[string]int{
+			"ephemeral_5m_input_tokens": 0,
+			"ephemeral_1h_input_tokens": 0,
+		},
 	}
 	if cacheResult != nil {
 		if cacheResult.CacheCreationTokens > 0 {
@@ -463,6 +498,7 @@ func handleNonStreamRequest(c *gin.Context, anthropicReq types.AnthropicRequest,
 	}
 
 	anthropicResp := map[string]any{
+		"id":            fmt.Sprintf(config.MessageIDFormat, utils.GenerateBase62ID(22)),
 		"content":       contexts,
 		"model":         anthropicReq.Model,
 		"role":          "assistant",

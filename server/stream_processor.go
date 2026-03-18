@@ -33,10 +33,13 @@ type StreamProcessorContext struct {
 	compliantParser *parser.CompliantEventStreamParser
 
 	// Thinking 提取器（用于从文本中提取 <thinking> 标签内容）
-	thinkingExtractor    *ThinkingExtractor
-	thinkingEnabled      bool // 是否启用 thinking 模式
-	thinkingBlockStarted bool // thinking 块是否已开始
-	thinkingBlockIndex   int  // thinking 块的索引
+	thinkingExtractor       *ThinkingExtractor
+	thinkingEnabled         bool // 是否启用 thinking 模式
+	thinkingBlockStarted    bool // thinking 块是否已开始
+	thinkingBlockIndex      int  // thinking 块的索引
+	nativeThinkingActive    bool // 是否有原生 thinking 块正在进行
+	nativeSignatureReceived bool // 是否已收到上游的 signature_delta
+	nativeThinkingContent   int  // 原生 thinking 内容累计长度（用于生成伪签名）
 	textBlockIndex       int  // 文本块的索引（thinking 模式下用于发送普通文本）
 	textBlockStarted     bool // 文本块是否已开始
 
@@ -412,12 +415,44 @@ func (esp *EventStreamProcessor) processEvent(event parser.SSEEvent) error {
 	switch eventType {
 	case "content_block_start":
 		esp.ctx.processToolUseStart(dataMap)
-		// 如果启用 thinking 模式，转换 thinking 块格式
+		// 如果启用 thinking 模式
 		if esp.ctx.thinkingEnabled {
 			if cb, ok := dataMap["content_block"].(map[string]any); ok {
-				if cbType, _ := cb["type"].(string); cbType == "thinking" {
+				cbType, _ := cb["type"].(string)
+
+				if cbType == "thinking" {
 					// 添加空 thinking 字段以符合 Anthropic API 格式
 					cb["thinking"] = ""
+					// 标记原生 thinking 块开始
+					esp.ctx.nativeThinkingActive = true
+					esp.ctx.nativeSignatureReceived = false
+					esp.ctx.nativeThinkingContent = 0
+				}
+
+				// 如果是 text 块但还没出现过 thinking → 补一个最小 thinking 块
+				if cbType == "text" && !esp.ctx.thinkingBlockStarted && !esp.ctx.nativeThinkingActive && esp.ctx.nativeThinkingContent == 0 {
+					minThinking := "I'll answer this directly."
+					fakeSig := GenerateFakeSignature(len(minThinking))
+
+					// 发送 thinking block: start → delta → signature → stop
+					idx := esp.ctx.sseStateManager.AllocateBlockIndex()
+					esp.ctx.sseStateManager.SendEvent(esp.ctx.c, esp.ctx.sender, map[string]any{
+						"type": "content_block_start", "index": idx,
+						"content_block": map[string]any{"type": "thinking", "thinking": ""},
+					})
+					esp.ctx.sseStateManager.SendEvent(esp.ctx.c, esp.ctx.sender, map[string]any{
+						"type": "content_block_delta", "index": idx,
+						"delta": map[string]any{"type": "thinking_delta", "thinking": minThinking},
+					})
+					esp.ctx.sseStateManager.SendEvent(esp.ctx.c, esp.ctx.sender, map[string]any{
+						"type": "content_block_delta", "index": idx,
+						"delta": map[string]any{"type": "signature_delta", "signature": fakeSig},
+					})
+					esp.ctx.sseStateManager.SendEvent(esp.ctx.c, esp.ctx.sender, map[string]any{
+						"type": "content_block_stop", "index": idx,
+					})
+					// 标记已补过，防止重复
+					esp.ctx.nativeThinkingContent = len(minThinking)
 				}
 			}
 		}
@@ -426,11 +461,25 @@ func (esp *EventStreamProcessor) processEvent(event parser.SSEEvent) error {
 		// 如果启用 thinking 模式，转换 thinking_delta 格式
 		if esp.ctx.thinkingEnabled {
 			if delta, ok := dataMap["delta"].(map[string]any); ok {
-				if deltaType, _ := delta["type"].(string); deltaType == "thinking_delta" {
+				deltaType, _ := delta["type"].(string)
+
+				if deltaType == "thinking_delta" {
 					// 将 text 字段改为 thinking 字段
 					if text, exists := delta["text"]; exists {
 						delta["thinking"] = text
 						delete(delta, "text")
+					}
+					// 累计 thinking 内容长度
+					if thinking, ok := delta["thinking"].(string); ok {
+						esp.ctx.nativeThinkingContent += len(thinking)
+					}
+				}
+
+				if deltaType == "signature_delta" {
+					esp.ctx.nativeSignatureReceived = true
+					// 注册真实签名到签名表
+					if sig, ok := delta["signature"].(string); ok {
+						RegisterSignature(sig)
 					}
 				}
 			}
@@ -444,8 +493,24 @@ func (esp *EventStreamProcessor) processEvent(event parser.SSEEvent) error {
 
 	case "content_block_stop":
 		esp.ctx.processToolUseStop(dataMap)
-		// 如果启用了 thinking 模式，在块结束时刷新提取器
+		// 如果启用了 thinking 模式
 		if esp.ctx.thinkingEnabled {
+			// 原生 thinking 块结束且没有收到 signature_delta → 补一个伪造的
+			if esp.ctx.nativeThinkingActive && !esp.ctx.nativeSignatureReceived {
+				fakeSig := GenerateFakeSignature(esp.ctx.nativeThinkingContent)
+				sigEvent := map[string]any{
+					"type":  "content_block_delta",
+					"index": dataMap["index"],
+					"delta": map[string]any{
+						"type":      "signature_delta",
+						"signature": fakeSig,
+					},
+				}
+				esp.ctx.sseStateManager.SendEvent(esp.ctx.c, esp.ctx.sender, sigEvent)
+			}
+			esp.ctx.nativeThinkingActive = false
+
+			// 刷新 XML thinking 提取器
 			if err := esp.flushThinkingExtractor(); err != nil {
 				utils.Log("刷新 thinking 提取器失败", utils.LogErr(err))
 			}

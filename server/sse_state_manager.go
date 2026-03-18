@@ -272,7 +272,7 @@ func (ssm *SSEStateManager) handleContentBlockDelta(c *gin.Context, sender Strea
 		case "thinking":
 			// 为 thinking 块添加必要字段
 			startEvent["content_block"].(map[string]any)["thinking"] = ""
-			startEvent["content_block"].(map[string]any)["signature"] = "EqYBCkYIARgCIkD8kiro_auto_generated"
+			startEvent["content_block"].(map[string]any)["signature"] = GenerateFakeSignature(100)
 		}
 
 		// 先处理start事件来更新状态

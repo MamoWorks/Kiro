@@ -50,9 +50,10 @@ func AuthMiddleware() gin.HandlerFunc {
 			return
 		}
 
-		// 将 access token 和原始 refresh token 存入上下文
+		// 将 access token、原始 refresh token 和 token hash 存入上下文
 		c.Set("accessToken", accessToken)
 		c.Set("refreshToken", token)
+		c.Set("tokenHash", sha256Hash(token))
 		c.Next()
 	}
 }

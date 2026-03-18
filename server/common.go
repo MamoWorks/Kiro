@@ -82,16 +82,8 @@ func filterSupportedTools(tools []types.AnthropicTool) []types.AnthropicTool {
 		return tools
 	}
 
-	filtered := make([]types.AnthropicTool, 0, len(tools))
-	for _, tool := range tools {
-		// 过滤不支持的工具：web_search（与 converter/codewhisperer.go 保持一致）
-		if tool.Name == "web_search" || tool.Name == "websearch" {
-			continue
-		}
-		filtered = append(filtered, tool)
-	}
-
-	return filtered
+	// web_search 现在通过 MCP 支持，不再过滤
+	return tools
 }
 
 func executeCodeWhispererRequest(c *gin.Context, anthropicReq types.AnthropicRequest, tokenInfo types.TokenInfo, isStream bool) (*http.Response, error) {
@@ -107,7 +99,10 @@ func executeCodeWhispererRequest(c *gin.Context, anthropicReq types.AnthropicReq
 		return nil, err
 	}
 
-	resp, err := utils.DoRequest(req)
+	// 通过代理管理器按 token hash 路由
+	proxyKey, _ := c.Get("tokenHash")
+	proxyKeyStr, _ := proxyKey.(string)
+	resp, err := utils.DoRequestWithProxy(req, proxyKeyStr)
 	if err != nil {
 		if !isStream {
 			handleRequestSendError(c, err)
@@ -155,15 +150,15 @@ func buildCodeWhispererRequest(c *gin.Context, anthropicReq types.AnthropicReque
 	}
 
 	req.Header.Set("Authorization", "Bearer "+tokenInfo.AccessToken)
-	req.Header.Set("Content-Type", "application/json")
-	req.Header.Set("Accept", "*/*")
+	req.Header.Set("content-type", "application/x-amz-json-1.0")
+	req.Header.Set("accept", "*/*")
+	req.Header.Set("accept-encoding", "gzip")
+	req.Header.Set("x-amz-target", "AmazonCodeWhispererStreamingService.GenerateAssistantResponse")
 	req.Header.Set("x-amzn-codewhisperer-optout", "true")
-	req.Header.Set("x-amzn-kiro-agent-mode", "vibe")
-	req.Header.Set("x-amz-user-agent", "aws-sdk-js/1.0.0 KiroIDE-"+config.KiroVersion)
-	req.Header.Set("User-Agent", "aws-sdk-js/1.0.0 ua/2.1 os/windows#10.0 lang/js md/nodejs#20.18.0 api/codewhispererruntime#1.0.0 m/E KiroIDE-"+config.KiroVersion)
+	req.Header.Set("user-agent", "aws-sdk-rust/1.3.10 ua/2.1 api/codewhispererstreaming/0.1.10231 os/macos lang/rust/1.86.0 md/appVersion-"+config.KiroCLIVersion+" app/AmazonQ-For-CLI")
+	req.Header.Set("x-amz-user-agent", "aws-sdk-rust/1.3.10 ua/2.1 api/codewhispererstreaming/0.1.10231 os/macos lang/rust/1.86.0 m/F app/AmazonQ-For-CLI")
 	req.Header.Set("amz-sdk-invocation-id", utils.GenerateUUID())
-	req.Header.Set("amz-sdk-request", "attempt=1; max=1")
-	req.Header.Set("Connection", "close")
+	req.Header.Set("amz-sdk-request", "attempt=1; max=3")
 
 	return req, nil
 }
@@ -342,7 +337,11 @@ func convertMessageStart(m map[string]any) *types.MessageStartEvent {
 			msg.Content = cleanedContent
 		}
 		if usage, ok := message["usage"].(map[string]any); ok {
-			msg.Usage = &types.UsageInfo{}
+			msg.Usage = &types.UsageInfo{
+				ServiceTier:   "standard",
+				InferenceGeo:  "not_available",
+				CacheCreation: &types.CacheCreation{},
+			}
 			// cache 相关字段
 			if v, ok := usage["cache_creation_input_tokens"].(int); ok {
 				msg.Usage.CacheCreationInputTokens = v
@@ -501,7 +500,11 @@ func convertMessageDelta(m map[string]any) *types.MessageDeltaEvent {
 
 	var usage *types.UsageInfo
 	if u, ok := m["usage"].(map[string]any); ok {
-		usage = &types.UsageInfo{}
+		usage = &types.UsageInfo{
+			ServiceTier:   "standard",
+			InferenceGeo:  "not_available",
+			CacheCreation: &types.CacheCreation{},
+		}
 		// cache 相关字段
 		if v, ok := u["cache_creation_input_tokens"].(int); ok {
 			usage.CacheCreationInputTokens = v

@@ -86,8 +86,9 @@ func RefreshAmazonQToken(clientID, clientSecret, refreshToken string) (string, e
 	}
 	req.Header.Set("amz-sdk-invocation-id", utils.GenerateUUID())
 
-	client := utils.SharedHTTPClient
-	resp, err := client.Do(req)
+	// token 刷新也走代理（用 refreshToken 的 hash 做 key）
+	tokenHash := sha256Hash(refreshToken)
+	resp, err := utils.DoRequestWithProxy(req, tokenHash)
 	if err != nil {
 		return "", fmt.Errorf("请求失败: %v", err)
 	}
@@ -129,10 +130,13 @@ func RefreshKiroToken(refreshToken string) (string, error) {
 		return "", fmt.Errorf("创建请求失败: %v", err)
 	}
 
-	req.Header.Set("Content-Type", "application/json")
+	for k, v := range config.KiroRefreshHeaders {
+		req.Header.Set(k, v)
+	}
 
-	client := utils.SharedHTTPClient
-	resp, err := client.Do(req)
+	// Kiro token 刷新也走代理
+	tokenHash := sha256Hash(refreshToken)
+	resp, err := utils.DoRequestWithProxy(req, tokenHash)
 	if err != nil {
 		return "", fmt.Errorf("请求失败: %v", err)
 	}

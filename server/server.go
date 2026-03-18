@@ -8,6 +8,7 @@ import (
 
 	"kiro/cache"
 	"kiro/config"
+	"kiro/proxy"
 
 	"kiro/types"
 	"kiro/utils"
@@ -21,6 +22,15 @@ import (
 func StartServer(port string) {
 	// 初始化 Prompt Cache（每5分钟清理过期条目）
 	cache.InitGlobalCache(5 * time.Minute)
+
+	// 初始化代理管理器
+	skipTLS := os.Getenv("GIN_MODE") == "debug"
+	proxy.Init(skipTLS)
+	proxy.StartCleanupTicker()
+
+	// 初始化签名持久化存储
+	InitSignatureStore()
+	StartSignatureCleanup()
 
 	// 设置 gin 模式
 	ginMode := os.Getenv("GIN_MODE")
@@ -158,6 +168,25 @@ func StartServer(port string) {
 		trimmedContent := strings.TrimSpace(content)
 		if trimmedContent == "" || trimmedContent == "answer for user question" {
 			respondError(c, http.StatusBadRequest, "%s", "消息内容不能为空")
+			return
+		}
+
+		// 校验历史消息中 thinking 块的签名
+		if err := validateThinkingSignatures(anthropicReq); err != nil {
+			c.JSON(http.StatusBadRequest, gin.H{
+				"type": "error",
+				"error": gin.H{
+					"type":    "invalid_request_error",
+					"message": err.Error(),
+				},
+			})
+			return
+		}
+
+		// 检测 web_search 工具，路由到 MCP 处理
+		if hasWebSearchTool(anthropicReq) {
+			utils.Info("检测到 web_search 工具，路由到 MCP 端点")
+			handleMCPWebSearch(c, anthropicReq, tokenInfo)
 			return
 		}
 
