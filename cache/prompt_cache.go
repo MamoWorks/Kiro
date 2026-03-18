@@ -134,7 +134,10 @@ func (c *PromptCache) Size() int {
 	return len(c.entries)
 }
 
-// ProcessRequest 处理请求的缓存逻辑，返回缓存命中/创建的 token 统计
+// ProcessRequest 处理请求的缓存逻辑（官方前缀累计方式）
+// 官方逻辑：cache_control 是断点标记，缓存的是从头到断点的所有内容的累计前缀。
+// 断点处用前缀 hash 做 key，命中时 cache_read = 累计 token 数。
+// 只有最后一个命中的断点生效（最长前缀匹配）。
 func ProcessRequest(req types.AnthropicRequest, inputTokens int) *CacheResult {
 	pc := GetGlobalCache()
 	if pc == nil {
@@ -145,85 +148,144 @@ func ProcessRequest(req types.AnthropicRequest, inputTokens int) *CacheResult {
 	result := &CacheResult{TotalTokens: inputTokens}
 	minTokens := GetMinCacheTokens(req.Model)
 
+	// 收集所有内容块，按顺序构建前缀
+	type contentItem struct {
+		hash   string // 这个块自身内容的 hash
+		tokens int    // 这个块的 token 数
+		hasCc  bool   // 是否有 cache_control 断点
+		ttl    string // ephemeral TTL
+	}
+	var items []contentItem
+
 	// 处理 system 消息
 	for _, sysMsg := range req.System {
 		if sysMsg.Text == "" {
 			continue
 		}
 		hash := computeHash(sysMsg.Text)
-		tokens := estimator.EstimateTextTokens(sysMsg.Text) + 2 // 系统提示固定开销
-
-		processContentBlock(pc, hash, tokens, sysMsg.CacheControl, minTokens, result)
+		tokens := estimator.EstimateTextTokens(sysMsg.Text) + 2
+		hasCc := sysMsg.CacheControl != nil && sysMsg.CacheControl.Type == "ephemeral"
+		ttl := ""
+		if hasCc && sysMsg.CacheControl.TTL != "" {
+			ttl = sysMsg.CacheControl.TTL
+		}
+		items = append(items, contentItem{hash: hash, tokens: tokens, hasCc: hasCc, ttl: ttl})
 	}
 
-	// 处理 messages
+	// 处理 tools（在 system 之后、messages 之前，参与前缀累计）
+	for _, tool := range req.Tools {
+		if tool.Name == "" {
+			continue
+		}
+		data, err := json.Marshal(tool)
+		if err != nil {
+			continue
+		}
+		hash := computeHashBytes(data)
+		tokens := estimator.EstimateToolUseTokens(tool.Name, tool.InputSchema)
+		hasCc := tool.CacheControl != nil && tool.CacheControl.Type == "ephemeral"
+		ttl := ""
+		if hasCc && tool.CacheControl.TTL != "" {
+			ttl = tool.CacheControl.TTL
+		}
+		items = append(items, contentItem{hash: hash, tokens: tokens, hasCc: hasCc, ttl: ttl})
+	}
+
+	// 处理 messages（按顺序遍历所有内容块）
 	for _, msg := range req.Messages {
 		switch content := msg.Content.(type) {
 		case string:
-			if content == "" {
-				continue
+			if content != "" {
+				items = append(items, contentItem{
+					hash: computeHash(content), tokens: estimator.EstimateTextTokens(content),
+				})
 			}
-			hash := computeHash(content)
-			tokens := estimator.EstimateTextTokens(content)
-			// 无 cache_control 标记的字符串消息，仅自动命中
-			processContentBlock(pc, hash, tokens, nil, minTokens, result)
-
 		case []any:
 			for _, block := range content {
 				blockMap, ok := block.(map[string]any)
 				if !ok {
 					continue
 				}
-				processRawContentBlock(pc, estimator, blockMap, minTokens, result)
+				item := extractContentItem(estimator, blockMap)
+				if item != nil {
+					items = append(items, *item)
+				}
 			}
-
 		case []types.ContentBlock:
 			for _, block := range content {
-				processTypedContentBlock(pc, estimator, block, minTokens, result)
+				item := extractTypedContentItem(estimator, block)
+				if item != nil {
+					items = append(items, *item)
+				}
 			}
 		}
+	}
+
+	// 构建前缀 hash 并在断点处检查缓存
+	// 前缀 hash = hash(block1.hash + block2.hash + ... + blockN.hash)
+	var prefixParts []string
+	var cumulativeTokens int
+
+	// 记录最后一个命中的断点
+	var lastReadTokens int
+	var lastCreateTokens int
+	var lastCreateTTL string
+	var hasRead bool
+	var hasCreate bool
+
+	for _, item := range items {
+		prefixParts = append(prefixParts, item.hash)
+		cumulativeTokens += item.tokens
+
+		if !item.hasCc {
+			continue
+		}
+
+		// 到达断点，用前缀 hash 检查缓存
+		prefixHash := computeHash(joinHashes(prefixParts))
+
+		entry, exists := pc.Get(prefixHash)
+		if exists {
+			// 命中：记录这个断点的累计 token（后面的断点可能覆盖）
+			lastReadTokens = entry.Tokens
+			hasRead = true
+			// 清除之前可能标记的 create（更长前缀命中了）
+			hasCreate = false
+		} else if cumulativeTokens >= minTokens {
+			// 未命中且达到最小 token 要求：标记为待创建
+			lastCreateTokens = cumulativeTokens
+			lastCreateTTL = item.ttl
+			if lastCreateTTL == "" {
+				lastCreateTTL = "5m"
+			}
+			hasCreate = true
+			// 不立即写入，等确定最终状态
+
+			// 写入缓存
+			pc.Set(prefixHash, cumulativeTokens, lastCreateTTL)
+		}
+	}
+
+	// 应用最终结果：只报最后一个有效断点
+	if hasRead {
+		result.CacheReadTokens = lastReadTokens
+	}
+	if hasCreate {
+		result.CacheCreationTokens = lastCreateTokens
 	}
 
 	return result
 }
 
-// processContentBlock 处理单个内容块的缓存逻辑
-// minTokens: 根据模型决定的最小可缓存 token 数
-func processContentBlock(pc *PromptCache, hash string, tokens int, cc *types.CacheControl, minTokens int, result *CacheResult) {
-	hasCacheControl := cc != nil && cc.Type == "ephemeral"
-
-	entry, exists := pc.Get(hash)
-	if exists {
-		// 缓存命中（无论是否带 cache_control 标记）
-		result.CacheReadTokens += entry.Tokens
-	} else if hasCacheControl && tokens >= minTokens {
-		// 有 cache_control 标记、缓存不存在、且 token 数达到最小要求 → 创建缓存
-		ttl := cc.TTL
-		if ttl == "" {
-			ttl = "5m" // 默认 5 分钟
-		}
-		pc.Set(hash, tokens, ttl)
-		result.CacheCreationTokens += tokens
-	}
-	// 无 cache_control 或 token 数不足 → 不创建缓存，正常计算
-}
-
-// processRawContentBlock 处理原始 map 格式的内容块
-func processRawContentBlock(pc *PromptCache, estimator *utils.TokenEstimator, blockMap map[string]any, minTokens int, result *CacheResult) {
+// extractContentItem 从 map 格式内容块提取缓存信息
+func extractContentItem(estimator *utils.TokenEstimator, blockMap map[string]any) *struct {
+	hash   string
+	tokens int
+	hasCc  bool
+	ttl    string
+} {
 	blockType, _ := blockMap["type"].(string)
 
-	// 提取 cache_control
-	var cc *types.CacheControl
-	if ccRaw, ok := blockMap["cache_control"]; ok && ccRaw != nil {
-		if ccMap, ok := ccRaw.(map[string]any); ok {
-			cc = &types.CacheControl{
-				Type: getStr(ccMap, "type"),
-				TTL:  getStr(ccMap, "ttl"),
-			}
-		}
-	}
-
-	// 计算哈希和 tokens
 	var hash string
 	var tokens int
 
@@ -231,73 +293,56 @@ func processRawContentBlock(pc *PromptCache, estimator *utils.TokenEstimator, bl
 	case "text":
 		text, _ := blockMap["text"].(string)
 		if text == "" {
-			return
+			return nil
 		}
 		hash = computeHash(text)
 		tokens = estimator.EstimateTextTokens(text)
-
 	case "tool_use":
-		// 序列化整个块计算哈希
 		data, err := json.Marshal(blockMap)
 		if err != nil {
-			return
+			return nil
 		}
 		hash = computeHashBytes(data)
 		toolName, _ := blockMap["name"].(string)
 		toolInput, _ := blockMap["input"].(map[string]any)
 		tokens = estimator.EstimateToolUseTokens(toolName, toolInput)
-
 	case "tool_result":
 		data, err := json.Marshal(blockMap)
 		if err != nil {
-			return
+			return nil
 		}
 		hash = computeHashBytes(data)
-		// 粗略估算 tool_result token
 		tokens = len(data) / 4
 		if tokens < 1 {
 			tokens = 1
 		}
-
 	case "image":
-		// 图片使用 source hash
 		data, err := json.Marshal(blockMap)
 		if err != nil {
-			return
+			return nil
 		}
 		hash = computeHashBytes(data)
-		// 尝试从 source 获取 base64 数据计算精确 token
 		if source, ok := blockMap["source"].(map[string]any); ok {
 			if imgData, ok := source["data"].(string); ok && imgData != "" {
 				tokens = utils.EstimateImageTokensFromBase64(imgData)
 			} else {
-				tokens = 1500 // 无法获取数据时使用默认值
+				tokens = 1500
 			}
 		} else {
 			tokens = 1500
 		}
-
-	case "document":
-		data, err := json.Marshal(blockMap)
-		if err != nil {
-			return
-		}
-		hash = computeHashBytes(data)
-		// 尝试从 source 获取 base64 数据估算 token
-		if source, ok := blockMap["source"].(map[string]any); ok {
-			if docData, ok := source["data"].(string); ok && docData != "" {
-				tokens = utils.EstimateDocumentTokensFromBase64(docData)
-			} else {
-				tokens = 500 // 无法获取数据时使用默认值
-			}
+	case "thinking":
+		// thinking 块不参与缓存计算但参与前缀
+		if thinking, ok := blockMap["thinking"].(string); ok && thinking != "" {
+			hash = computeHash(thinking)
+			tokens = len(thinking) / 4
 		} else {
-			tokens = 500
+			return nil
 		}
-
 	default:
 		data, err := json.Marshal(blockMap)
 		if err != nil {
-			return
+			return nil
 		}
 		hash = computeHashBytes(data)
 		tokens = len(data) / 4
@@ -306,27 +351,44 @@ func processRawContentBlock(pc *PromptCache, estimator *utils.TokenEstimator, bl
 		}
 	}
 
-	processContentBlock(pc, hash, tokens, cc, minTokens, result)
+	hasCc := false
+	ttl := ""
+	if ccRaw, ok := blockMap["cache_control"]; ok && ccRaw != nil {
+		if ccMap, ok := ccRaw.(map[string]any); ok {
+			if getStr(ccMap, "type") == "ephemeral" {
+				hasCc = true
+				ttl = getStr(ccMap, "ttl")
+			}
+		}
+	}
+
+	return &struct {
+		hash   string
+		tokens int
+		hasCc  bool
+		ttl    string
+	}{hash: hash, tokens: tokens, hasCc: hasCc, ttl: ttl}
 }
 
-// processTypedContentBlock 处理类型化内容块
-func processTypedContentBlock(pc *PromptCache, estimator *utils.TokenEstimator, block types.ContentBlock, minTokens int, result *CacheResult) {
+// extractTypedContentItem 从结构化内容块提取缓存信息
+func extractTypedContentItem(estimator *utils.TokenEstimator, block types.ContentBlock) *struct {
+	hash   string
+	tokens int
+	hasCc  bool
+	ttl    string
+} {
 	var hash string
 	var tokens int
 
 	switch block.Type {
 	case "text":
 		if block.Text == nil || *block.Text == "" {
-			return
+			return nil
 		}
 		hash = computeHash(*block.Text)
 		tokens = estimator.EstimateTextTokens(*block.Text)
-
 	case "tool_use":
-		data, err := json.Marshal(block)
-		if err != nil {
-			return
-		}
+		data, _ := json.Marshal(block)
 		hash = computeHashBytes(data)
 		toolName := ""
 		if block.Name != nil {
@@ -339,25 +401,16 @@ func processTypedContentBlock(pc *PromptCache, estimator *utils.TokenEstimator, 
 			}
 		}
 		tokens = estimator.EstimateToolUseTokens(toolName, toolInput)
-
 	case "image":
-		data, err := json.Marshal(block)
-		if err != nil {
-			return
-		}
+		data, _ := json.Marshal(block)
 		hash = computeHashBytes(data)
-		// 尝试从 Source 获取 base64 数据计算精确 token
 		if block.Source != nil && block.Source.Data != "" {
 			tokens = utils.EstimateImageTokensFromBase64(block.Source.Data)
 		} else {
-			tokens = 1500 // 无法获取数据时使用默认值
+			tokens = 1500
 		}
-
 	default:
-		data, err := json.Marshal(block)
-		if err != nil {
-			return
-		}
+		data, _ := json.Marshal(block)
 		hash = computeHashBytes(data)
 		tokens = len(data) / 4
 		if tokens < 1 {
@@ -365,8 +418,30 @@ func processTypedContentBlock(pc *PromptCache, estimator *utils.TokenEstimator, 
 		}
 	}
 
-	processContentBlock(pc, hash, tokens, block.CacheControl, minTokens, result)
+	hasCc := block.CacheControl != nil && block.CacheControl.Type == "ephemeral"
+	ttl := ""
+	if hasCc && block.CacheControl.TTL != "" {
+		ttl = block.CacheControl.TTL
+	}
+
+	return &struct {
+		hash   string
+		tokens int
+		hasCc  bool
+		ttl    string
+	}{hash: hash, tokens: tokens, hasCc: hasCc, ttl: ttl}
 }
+
+// joinHashes 拼接 hash 列表用于前缀 hash
+func joinHashes(hashes []string) string {
+	result := ""
+	for _, h := range hashes {
+		result += h + "|"
+	}
+	return result
+}
+
+
 
 // computeHash 计算字符串内容的 SHA-256 哈希
 func computeHash(content string) string {
