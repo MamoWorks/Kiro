@@ -27,10 +27,19 @@ type MessageInfo struct {
 
 // UsageInfo 使用量信息（与官方 Claude API 一致）
 type UsageInfo struct {
-	CacheCreationInputTokens int `json:"cache_creation_input_tokens,omitempty"`
-	CacheReadInputTokens     int `json:"cache_read_input_tokens,omitempty"`
-	InputTokens              int `json:"input_tokens"`
-	OutputTokens             int `json:"output_tokens"`
+	InputTokens              int              `json:"input_tokens"`
+	CacheCreationInputTokens int              `json:"cache_creation_input_tokens"`
+	CacheReadInputTokens     int              `json:"cache_read_input_tokens"`
+	CacheCreation            *CacheCreation   `json:"cache_creation,omitempty"`
+	OutputTokens             int              `json:"output_tokens"`
+	ServiceTier              string           `json:"service_tier,omitempty"`
+	InferenceGeo             string           `json:"inference_geo,omitempty"`
+}
+
+// CacheCreation 缓存创建详情
+type CacheCreation struct {
+	Ephemeral5mInputTokens int `json:"ephemeral_5m_input_tokens"`
+	Ephemeral1hInputTokens int `json:"ephemeral_1h_input_tokens"`
 }
 
 // ContentBlockStartEvent content_block_start 事件

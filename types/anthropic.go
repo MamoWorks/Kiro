@@ -4,9 +4,10 @@ import "encoding/json"
 
 // AnthropicTool 表示 Anthropic API 的工具结构
 type AnthropicTool struct {
-	Name        string         `json:"name"`
-	Description string         `json:"description"`
-	InputSchema map[string]any `json:"input_schema"`
+	Name         string        `json:"name"`
+	Description  string        `json:"description"`
+	InputSchema  map[string]any `json:"input_schema"`
+	CacheControl *CacheControl  `json:"cache_control,omitempty"`
 }
 
 // ToolChoice 表示工具选择策略

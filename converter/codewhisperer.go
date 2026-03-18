@@ -119,25 +119,7 @@ func buildEnhancedSystemPrompt(anthropicReq types.AnthropicRequest) string {
 
 // determineChatTriggerType 智能确定聊天触发类型 (SOLID-SRP: 单一责任)
 func determineChatTriggerType(anthropicReq types.AnthropicRequest) string {
-	// 如果有工具调用，通常是自动触发的
-	if len(anthropicReq.Tools) > 0 {
-		// 检查tool_choice是否强制要求使用工具
-		if anthropicReq.ToolChoice != nil {
-			if tc, ok := anthropicReq.ToolChoice.(*types.ToolChoice); ok && tc != nil {
-				if tc.Type == "any" || tc.Type == "tool" {
-					return "AUTO" // 自动工具调用
-				}
-			} else if tcMap, ok := anthropicReq.ToolChoice.(map[string]any); ok {
-				if tcType, exists := tcMap["type"].(string); exists {
-					if tcType == "any" || tcType == "tool" {
-						return "AUTO" // 自动工具调用
-					}
-				}
-			}
-		}
-	}
-
-	// 默认为手动触发
+	// 上游 CodeWhisperer 只接受 "MANUAL"，"AUTO" 会返回 Improperly formed request
 	return "MANUAL"
 }
 
@@ -395,7 +377,11 @@ func BuildCodeWhispererRequest(anthropicReq types.AnthropicRequest, ctx *gin.Con
 		modelId = anthropicReq.Model
 	}
 	cwReq.ConversationState.CurrentMessage.UserInputMessage.ModelId = modelId
-	cwReq.ConversationState.CurrentMessage.UserInputMessage.Origin = "AI_EDITOR" // v0.4兼容性：固定使用AI_EDITOR
+	cwReq.ConversationState.CurrentMessage.UserInputMessage.Origin = "KIRO_CLI" // 伪装为 Kiro CLI
+	cwReq.ConversationState.CurrentMessage.UserInputMessage.UserInputMessageContext.EnvState = types.EnvState{
+		OperatingSystem:         "macos",
+		CurrentWorkingDirectory: ".",
+	}
 
 	// 处理 tools 信息 - 根据req.json实际结构优化工具转换
 	if len(anthropicReq.Tools) > 0 {
@@ -410,10 +396,8 @@ func BuildCodeWhispererRequest(anthropicReq types.AnthropicRequest, ctx *gin.Con
 				continue
 			}
 
-			// 过滤不支持的工具：web_search (静默过滤，不发送到上游)
-			if tool.Name == "web_search" || tool.Name == "websearch" {
-				continue
-			}
+			// web_search 现在通过 MCP 路由处理，此处不再过滤
+			// 如果请求走到这里说明不含 web_search，直接透传
 
 			// utils.Log("转换工具定义",
 			// 	utils.LogInt("tool_index", i),
@@ -509,8 +493,12 @@ func BuildCodeWhispererRequest(anthropicReq types.AnthropicRequest, ctx *gin.Con
 						// 	utils.LogInt("tool_results_count", len(allToolResults)))
 					}
 
-					mergedUserMsg.UserInputMessage.ModelId = modelId
-					mergedUserMsg.UserInputMessage.Origin = "AI_EDITOR"
+					// 历史消息不带 modelId（与真正的 CLI 行为一致）
+					mergedUserMsg.UserInputMessage.Origin = "KIRO_CLI"
+					mergedUserMsg.UserInputMessage.UserInputMessageContext.EnvState = types.EnvState{
+						OperatingSystem:         "macos",
+						CurrentWorkingDirectory: ".",
+					}
 					history = append(history, mergedUserMsg)
 
 					// 清空缓冲区
@@ -598,8 +586,12 @@ func BuildCodeWhispererRequest(anthropicReq types.AnthropicRequest, ctx *gin.Con
 				mergedOrphanUserMsg.UserInputMessage.Content = ""
 			}
 
-			mergedOrphanUserMsg.UserInputMessage.ModelId = modelId
-			mergedOrphanUserMsg.UserInputMessage.Origin = "AI_EDITOR"
+			// 历史消息不带 modelId（与真正的 CLI 行为一致）
+			mergedOrphanUserMsg.UserInputMessage.Origin = "KIRO_CLI"
+			mergedOrphanUserMsg.UserInputMessage.UserInputMessageContext.EnvState = types.EnvState{
+				OperatingSystem:         "macos",
+				CurrentWorkingDirectory: ".",
+			}
 			history = append(history, mergedOrphanUserMsg)
 
 			// 自动配对一个"OK"的assistant响应
@@ -612,16 +604,8 @@ func BuildCodeWhispererRequest(anthropicReq types.AnthropicRequest, ctx *gin.Con
 		cwReq.ConversationState.History = history
 	}
 
-	// 设置 InferenceConfig（参考 CLIProxyAPIPlus 格式）
-	if anthropicReq.MaxTokens > 0 {
-		cwReq.InferenceConfig = &types.InferenceConfig{
-			MaxTokens: anthropicReq.MaxTokens,
-		}
-		// 如果指定了温度参数，也设置它
-		if anthropicReq.Temperature != nil {
-			cwReq.InferenceConfig.Temperature = *anthropicReq.Temperature
-		}
-	}
+	// 真正的 Kiro CLI 不发 InferenceConfig，跳过
+	// (保留注释以备将来需要时参考)
 
 	// 最终验证请求完整性 (KISS: 简化验证逻辑)
 	if err := validateCodeWhispererRequest(&cwReq); err != nil {
@@ -653,11 +637,6 @@ func extractToolUsesFromMessage(content any) []types.ToolUseEntry {
 							toolUse.Name = name
 						}
 
-						// 过滤不支持的工具：web_search (静默过滤)
-						if toolUse.Name == "web_search" || toolUse.Name == "websearch" {
-							continue
-						}
-
 						// 提取 input
 						if input, ok := block["input"].(map[string]any); ok {
 							toolUse.Input = input
@@ -684,11 +663,6 @@ func extractToolUsesFromMessage(content any) []types.ToolUseEntry {
 
 				if block.Name != nil {
 					toolUse.Name = *block.Name
-				}
-
-				// 过滤不支持的工具：web_search (静默过滤)
-				if toolUse.Name == "web_search" || toolUse.Name == "websearch" {
-					continue
 				}
 
 				if block.Input != nil {

@@ -20,6 +20,18 @@ func GenerateUUID() string {
 	return fmt.Sprintf("%x-%x-%x-%x-%x", b[0:4], b[4:6], b[6:8], b[8:10], b[10:])
 }
 
+// GenerateBase62ID 生成指定长度的 Base62 随机 ID（a-z A-Z 0-9）
+// 用于生成类似官方 API 的消息 ID 格式
+func GenerateBase62ID(length int) string {
+	const charset = "abcdefghijklmnopqrstuvwxyzABCDEFGHIJKLMNOPQRSTUVWXYZ0123456789"
+	b := make([]byte, length)
+	rand.Read(b)
+	for i := range b {
+		b[i] = charset[b[i]%62]
+	}
+	return string(b)
+}
+
 // ==================== Math ====================
 
 // IntMin 返回两个整数的最小值

@@ -5,6 +5,12 @@ import (
 	"fmt"
 )
 
+// EnvState 描述用户本地环境
+type EnvState struct {
+	OperatingSystem         string `json:"operatingSystem"`
+	CurrentWorkingDirectory string `json:"currentWorkingDirectory"`
+}
+
 // CodeWhispererRequest 表示 CodeWhisperer API 的请求结构
 // 格式参考 CLIProxyAPIPlus 项目
 type CodeWhispererRequest struct {
@@ -18,9 +24,10 @@ type CodeWhispererRequest struct {
 				Origin                  string               `json:"origin"`
 				Images                  []CodeWhispererImage `json:"images,omitempty"`
 				UserInputMessageContext struct {
+					EnvState    EnvState            `json:"envState"`
 					Tools       []CodeWhispererTool `json:"tools,omitempty"`
 					ToolResults []ToolResult        `json:"toolResults,omitempty"`
-				} `json:"userInputMessageContext,omitempty"`
+				} `json:"userInputMessageContext"`
 			} `json:"userInputMessage"`
 		} `json:"currentMessage"`
 		History []any `json:"history,omitempty"`
@@ -67,10 +74,11 @@ type CodeWhispererTool struct {
 type HistoryUserMessage struct {
 	UserInputMessage struct {
 		Content                 string               `json:"content"`
-		ModelId                 string               `json:"modelId"`
+		ModelId                 string               `json:"modelId,omitempty"`
 		Origin                  string               `json:"origin"`
 		Images                  []CodeWhispererImage `json:"images,omitempty"`
 		UserInputMessageContext struct {
+			EnvState    EnvState            `json:"envState"`
 			ToolResults []ToolResult        `json:"toolResults,omitempty"`
 			Tools       []CodeWhispererTool `json:"tools,omitempty"`
 		} `json:"userInputMessageContext"`

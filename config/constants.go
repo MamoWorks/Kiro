@@ -13,11 +13,8 @@ const (
 
 // 消息处理常量
 const (
-	// MessageIDFormat 消息ID格式
-	MessageIDFormat = "msg_%s"
-
-	// MessageIDTimeFormat 消息ID时间格式
-	MessageIDTimeFormat = "20060102150405"
+	// MessageIDFormat 消息ID格式（msg_01 前缀 + 随机字符，模拟官方格式）
+	MessageIDFormat = "msg_01%s"
 
 	// RetryDelay 重试延迟
 	RetryDelay = 100 * time.Millisecond
