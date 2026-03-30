@@ -172,8 +172,8 @@ func handleMCPWebSearch(c *gin.Context, anthropicReq types.AnthropicRequest, tok
 
 	httpReq.Header.Set("Content-Type", "application/json")
 	httpReq.Header.Set("Authorization", "Bearer "+token.AccessToken)
-	httpReq.Header.Set("user-agent", "aws-sdk-rust/1.3.10 ua/2.1 api/codewhispererstreaming/0.1.10231 os/macos lang/rust/1.86.0 md/appVersion-"+config.KiroCLIVersion+" app/AmazonQ-For-CLI")
-	httpReq.Header.Set("x-amz-user-agent", "aws-sdk-rust/1.3.10 ua/2.1 api/codewhispererstreaming/0.1.10231 os/macos lang/rust/1.86.0 m/F app/AmazonQ-For-CLI")
+	httpReq.Header.Set("user-agent", "aws-sdk-rust/"+config.SDKVersion+" ua/2.1 api/codewhispererstreaming/"+config.APIVersion+" os/linux lang/rust/1.92.0 md/appVersion-"+config.KiroCLIVersion+" app/AmazonQ-For-CLI")
+	httpReq.Header.Set("x-amz-user-agent", "aws-sdk-rust/"+config.SDKVersion+" ua/2.1 api/codewhispererstreaming/"+config.APIVersion+" os/linux lang/rust/1.92.0 m/F,C app/AmazonQ-For-CLI")
 
 	proxyKey, _ := c.Get("tokenHash")
 	proxyKeyStr, _ := proxyKey.(string)

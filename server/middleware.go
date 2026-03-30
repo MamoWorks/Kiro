@@ -37,7 +37,7 @@ func AuthMiddleware() gin.HandlerFunc {
 		}
 
 		// 获取或刷新 access token
-		accessToken, err := GetOrRefreshToken(token)
+		cached, err := GetOrRefreshToken(token)
 		if err != nil {
 			utils.Error("Token 认证失败: %v", err)
 			c.JSON(http.StatusUnauthorized, gin.H{
@@ -50,8 +50,9 @@ func AuthMiddleware() gin.HandlerFunc {
 			return
 		}
 
-		// 将 access token、原始 refresh token 和 token hash 存入上下文
-		c.Set("accessToken", accessToken)
+		// 将 access token、原始 refresh token、profileArn 和 token hash 存入上下文
+		c.Set("accessToken", cached.AccessToken)
+		c.Set("profileArn", cached.ProfileArn)
 		c.Set("refreshToken", token)
 		c.Set("tokenHash", sha256Hash(token))
 		c.Next()

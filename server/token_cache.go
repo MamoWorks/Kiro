@@ -23,6 +23,7 @@ import (
 type TokenCache struct {
 	AccessToken  string
 	RefreshToken string
+	ProfileArn   string
 	LastRefresh  time.Time
 	TokenType    types.TokenType
 	// AmazonQ 专用字段
@@ -115,19 +116,19 @@ func RefreshAmazonQToken(clientID, clientSecret, refreshToken string) (string, e
 /**
  * RefreshKiroToken 刷新 Kiro token
  */
-func RefreshKiroToken(refreshToken string) (string, error) {
+func RefreshKiroToken(refreshToken string) (*types.RefreshResponse, error) {
 	refreshReq := types.RefreshRequest{
 		RefreshToken: refreshToken,
 	}
 
 	reqBody, err := utils.FastMarshal(refreshReq)
 	if err != nil {
-		return "", fmt.Errorf("序列化请求失败: %v", err)
+		return nil, fmt.Errorf("序列化请求失败: %v", err)
 	}
 
 	req, err := http.NewRequest("POST", config.RefreshTokenURL, bytes.NewBuffer(reqBody))
 	if err != nil {
-		return "", fmt.Errorf("创建请求失败: %v", err)
+		return nil, fmt.Errorf("创建请求失败: %v", err)
 	}
 
 	for k, v := range config.KiroRefreshHeaders {
@@ -138,33 +139,33 @@ func RefreshKiroToken(refreshToken string) (string, error) {
 	tokenHash := sha256Hash(refreshToken)
 	resp, err := utils.DoRequestWithProxy(req, tokenHash)
 	if err != nil {
-		return "", fmt.Errorf("请求失败: %v", err)
+		return nil, fmt.Errorf("请求失败: %v", err)
 	}
 	defer resp.Body.Close()
 
 	if resp.StatusCode != http.StatusOK {
 		body, _ := io.ReadAll(resp.Body)
-		return "", fmt.Errorf("刷新失败: 状态码 %d, 响应: %s", resp.StatusCode, string(body))
+		return nil, fmt.Errorf("刷新失败: 状态码 %d, 响应: %s", resp.StatusCode, string(body))
 	}
 
 	var refreshResp types.RefreshResponse
 	body, err := io.ReadAll(resp.Body)
 	if err != nil {
-		return "", fmt.Errorf("读取响应失败: %v", err)
+		return nil, fmt.Errorf("读取响应失败: %v", err)
 	}
 
 	if err := utils.SafeUnmarshal(body, &refreshResp); err != nil {
-		return "", fmt.Errorf("解析响应失败: %v", err)
+		return nil, fmt.Errorf("解析响应失败: %v", err)
 	}
 
-	return refreshResp.AccessToken, nil
+	return &refreshResp, nil
 }
 
 /**
  * GetOrRefreshToken 获取或刷新 token，自动识别 Kiro 或 AmazonQ 格式
  * 使用 singleflight 确保同一个 token 的并发请求只刷新一次
  */
-func GetOrRefreshToken(token string) (string, error) {
+func GetOrRefreshToken(token string) (*TokenCache, error) {
 	tokenHash := sha256Hash(token)
 
 	// 检查缓存
@@ -173,7 +174,7 @@ func GetOrRefreshToken(token string) (string, error) {
 	tokenMutex.RUnlock()
 
 	if exists {
-		return cached.AccessToken, nil
+		return cached, nil
 	}
 
 	// 使用 singleflight 确保同一个 token 只刷新一次
@@ -183,20 +184,26 @@ func GetOrRefreshToken(token string) (string, error) {
 		cached, exists := tokenMap[tokenHash]
 		tokenMutex.RUnlock()
 		if exists {
-			return cached.AccessToken, nil
+			return cached, nil
 		}
 
 		// 解析 token 类型
 		tokenType, clientID, clientSecret, refreshToken := ParseToken(token)
 
 		var accessToken string
+		var profileArn string
 		var refreshErr error
 
 		switch tokenType {
 		case types.TokenTypeAmazonQ:
 			accessToken, refreshErr = RefreshAmazonQToken(clientID, clientSecret, refreshToken)
 		default:
-			accessToken, refreshErr = RefreshKiroToken(refreshToken)
+			var resp *types.RefreshResponse
+			resp, refreshErr = RefreshKiroToken(refreshToken)
+			if resp != nil {
+				accessToken = resp.AccessToken
+				profileArn = resp.ProfileArn
+			}
 		}
 
 		// 获取类型名称用于日志
@@ -207,31 +214,33 @@ func GetOrRefreshToken(token string) (string, error) {
 
 		if refreshErr != nil {
 			utils.Error("AT 刷新失败 [%s]: %v", typeName, refreshErr)
-			return "", refreshErr
+			return nil, refreshErr
 		}
 
 		utils.Info("AT 刷新成功 [%s]", typeName)
 
 		// 缓存
-		tokenMutex.Lock()
-		tokenMap[tokenHash] = &TokenCache{
+		entry := &TokenCache{
 			AccessToken:  accessToken,
 			RefreshToken: refreshToken,
+			ProfileArn:   profileArn,
 			LastRefresh:  time.Now(),
 			TokenType:    tokenType,
 			ClientID:     clientID,
 			ClientSecret: clientSecret,
 		}
+		tokenMutex.Lock()
+		tokenMap[tokenHash] = entry
 		tokenMutex.Unlock()
 
-		return accessToken, nil
+		return entry, nil
 	})
 
 	if err != nil {
-		return "", err
+		return nil, err
 	}
 
-	return result.(string), nil
+	return result.(*TokenCache), nil
 }
 
 /**
@@ -268,13 +277,19 @@ func RefreshAllTokens() {
 
 	for hash, cache := range tokens {
 		var newToken string
+		var newProfileArn string
 		var err error
 
 		switch cache.TokenType {
 		case types.TokenTypeAmazonQ:
 			newToken, err = RefreshAmazonQToken(cache.ClientID, cache.ClientSecret, cache.RefreshToken)
 		default:
-			newToken, err = RefreshKiroToken(cache.RefreshToken)
+			var resp *types.RefreshResponse
+			resp, err = RefreshKiroToken(cache.RefreshToken)
+			if resp != nil {
+				newToken = resp.AccessToken
+				newProfileArn = resp.ProfileArn
+			}
 		}
 
 		if err != nil {
@@ -289,6 +304,9 @@ func RefreshAllTokens() {
 		if tokenMap[hash] != nil {
 			tokenMap[hash].AccessToken = newToken
 			tokenMap[hash].LastRefresh = time.Now()
+			if newProfileArn != "" {
+				tokenMap[hash].ProfileArn = newProfileArn
+			}
 		}
 		tokenMutex.Unlock()
 

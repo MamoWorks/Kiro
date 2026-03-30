@@ -135,6 +135,15 @@ func buildCodeWhispererRequest(c *gin.Context, anthropicReq types.AnthropicReque
 		return nil, fmt.Errorf("构建CodeWhisperer请求失败: %v", err)
 	}
 
+	// 设置 profileArn（从 token 刷新响应中获取）
+	if c != nil {
+		if profileArn, exists := c.Get("profileArn"); exists {
+			if arn, ok := profileArn.(string); ok && arn != "" {
+				cwReq.ProfileArn = arn
+			}
+		}
+	}
+
 	cwReqBody, err := utils.SafeMarshal(cwReq)
 	if err != nil {
 		return nil, fmt.Errorf("序列化请求失败: %v", err)
@@ -154,9 +163,9 @@ func buildCodeWhispererRequest(c *gin.Context, anthropicReq types.AnthropicReque
 	req.Header.Set("accept", "*/*")
 	req.Header.Set("accept-encoding", "gzip")
 	req.Header.Set("x-amz-target", "AmazonCodeWhispererStreamingService.GenerateAssistantResponse")
-	req.Header.Set("x-amzn-codewhisperer-optout", "true")
-	req.Header.Set("user-agent", "aws-sdk-rust/1.3.10 ua/2.1 api/codewhispererstreaming/0.1.10231 os/macos lang/rust/1.86.0 md/appVersion-"+config.KiroCLIVersion+" app/AmazonQ-For-CLI")
-	req.Header.Set("x-amz-user-agent", "aws-sdk-rust/1.3.10 ua/2.1 api/codewhispererstreaming/0.1.10231 os/macos lang/rust/1.86.0 m/F app/AmazonQ-For-CLI")
+	req.Header.Set("x-amzn-codewhisperer-optout", "false")
+	req.Header.Set("user-agent", "aws-sdk-rust/"+config.SDKVersion+" ua/2.1 api/codewhispererstreaming/"+config.APIVersion+" os/linux lang/rust/1.92.0 md/appVersion-"+config.KiroCLIVersion+" app/AmazonQ-For-CLI")
+	req.Header.Set("x-amz-user-agent", "aws-sdk-rust/"+config.SDKVersion+" ua/2.1 api/codewhispererstreaming/"+config.APIVersion+" os/linux lang/rust/1.92.0 m/F,C app/AmazonQ-For-CLI")
 	req.Header.Set("amz-sdk-invocation-id", utils.GenerateUUID())
 	req.Header.Set("amz-sdk-request", "attempt=1; max=3")
 

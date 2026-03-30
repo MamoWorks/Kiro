@@ -15,9 +15,11 @@ type EnvState struct {
 // 格式参考 CLIProxyAPIPlus 项目
 type CodeWhispererRequest struct {
 	ConversationState struct {
-		ChatTriggerType string `json:"chatTriggerType"`
-		ConversationId  string `json:"conversationId"`
-		CurrentMessage  struct {
+		ChatTriggerType     string `json:"chatTriggerType"`
+		ConversationId      string `json:"conversationId"`
+		AgentContinuationId string `json:"agentContinuationId"`
+		AgentTaskType       string `json:"agentTaskType"`
+		CurrentMessage      struct {
 			UserInputMessage struct {
 				Content                 string               `json:"content"`
 				ModelId                 string               `json:"modelId"`

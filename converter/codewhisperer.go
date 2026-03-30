@@ -312,6 +312,8 @@ func BuildCodeWhispererRequest(anthropicReq types.AnthropicRequest, ctx *gin.Con
 
 	// 智能设置ChatTriggerType (KISS: 简化逻辑但保持准确性)
 	cwReq.ConversationState.ChatTriggerType = determineChatTriggerType(anthropicReq)
+	cwReq.ConversationState.AgentContinuationId = utils.GenerateUUID()
+	cwReq.ConversationState.AgentTaskType = "vibe"
 
 	// 使用 UUID 作为 conversationId
 	if ctx != nil {
@@ -377,9 +379,9 @@ func BuildCodeWhispererRequest(anthropicReq types.AnthropicRequest, ctx *gin.Con
 		modelId = anthropicReq.Model
 	}
 	cwReq.ConversationState.CurrentMessage.UserInputMessage.ModelId = modelId
-	cwReq.ConversationState.CurrentMessage.UserInputMessage.Origin = "KIRO_CLI" // 伪装为 Kiro CLI
+	cwReq.ConversationState.CurrentMessage.UserInputMessage.Origin = "KIRO_CLI"
 	cwReq.ConversationState.CurrentMessage.UserInputMessage.UserInputMessageContext.EnvState = types.EnvState{
-		OperatingSystem:         "macos",
+		OperatingSystem:         "linux",
 		CurrentWorkingDirectory: ".",
 	}
 
@@ -493,10 +495,10 @@ func BuildCodeWhispererRequest(anthropicReq types.AnthropicRequest, ctx *gin.Con
 						// 	utils.LogInt("tool_results_count", len(allToolResults)))
 					}
 
-					// 历史消息不带 modelId（与真正的 CLI 行为一致）
+					mergedUserMsg.UserInputMessage.ModelId = modelId
 					mergedUserMsg.UserInputMessage.Origin = "KIRO_CLI"
 					mergedUserMsg.UserInputMessage.UserInputMessageContext.EnvState = types.EnvState{
-						OperatingSystem:         "macos",
+						OperatingSystem:         "linux",
 						CurrentWorkingDirectory: ".",
 					}
 					history = append(history, mergedUserMsg)
@@ -586,10 +588,10 @@ func BuildCodeWhispererRequest(anthropicReq types.AnthropicRequest, ctx *gin.Con
 				mergedOrphanUserMsg.UserInputMessage.Content = ""
 			}
 
-			// 历史消息不带 modelId（与真正的 CLI 行为一致）
+			mergedOrphanUserMsg.UserInputMessage.ModelId = modelId
 			mergedOrphanUserMsg.UserInputMessage.Origin = "KIRO_CLI"
 			mergedOrphanUserMsg.UserInputMessage.UserInputMessageContext.EnvState = types.EnvState{
-				OperatingSystem:         "macos",
+				OperatingSystem:         "linux",
 				CurrentWorkingDirectory: ".",
 			}
 			history = append(history, mergedOrphanUserMsg)
